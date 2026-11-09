@@ -1,4 +1,8 @@
+# WORKFLOW_VERSION: 3
+# Kontrak dengan bot (server.js triggerWorkflow): inputs jobId, userId, payload(JSON: mode,url,buildType,perfMode,engine,tag).
+# Artifact APK bernama apk-<jobId>; log gagal bernama build-log-<jobId>.
 name: Build APK (Flutter / Gradle / Web2APK Auto)
+run-name: build-${{ github.event.inputs.jobId }}
 
 on:
   workflow_dispatch:
@@ -43,6 +47,22 @@ jobs:
           echo '${{ github.event.inputs.payload }}' > payload.json
           cat payload.json
 
+          # buildType dari payload (dikirim bot); fallback ke input build_type; default release
+          BT=$(jq -r '.buildType // empty' payload.json)
+          [ -z "$BT" ] && BT="$BUILD_TYPE"
+          echo "BUILD_TYPE=$BT" >> "$GITHUB_ENV"
+
+          # perfMode: fast = arm64 saja (tercepat) | low = arm32+arm64 (HP lama/low-end)
+          PERF=$(jq -r '.perfMode // "fast"' payload.json)
+          if [ "$PERF" = "low" ]; then
+            echo "TARGET_PLATFORMS=android-arm,android-arm64" >> "$GITHUB_ENV"
+            echo "GRADLE_ABIS=armeabi-v7a,arm64-v8a" >> "$GITHUB_ENV"
+          else
+            echo "TARGET_PLATFORMS=android-arm64" >> "$GITHUB_ENV"
+            echo "GRADLE_ABIS=arm64-v8a" >> "$GITHUB_ENV"
+          fi
+          echo "Profil build: $PERF | tipe: $BT"
+
           MODE=$(jq -r '.mode // empty' payload.json)
           if [ -z "$MODE" ]; then
             if jq -e '.appName' payload.json >/dev/null 2>&1; then MODE="url"; else MODE="zip"; fi
@@ -74,7 +94,7 @@ jobs:
       - name: Download & extract ZIP
         if: env.MODE == 'zip'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           rm -rf project_raw project.zip
@@ -274,8 +294,7 @@ jobs:
           set -euo pipefail
           flutter config --no-analytics >/dev/null 2>&1 || true
           [ "$MODE" != "url" ] && flutter pub get
-          BT="${{ github.event.inputs.build_type }}"
-          [ -z "$BT" ] && BT=release
+          BT="$BUILD_TYPE"
           flutter build apk --$BT \
             --target-platform=$TARGET_PLATFORMS \
             --no-tree-shake-icons \
@@ -287,8 +306,7 @@ jobs:
         working-directory: ${{ steps.detect.outputs.dir }}
         run: |
           set -euo pipefail
-          BT="${{ github.event.inputs.build_type }}"
-          [ -z "$BT" ] && BT=release
+          BT="$BUILD_TYPE"
           if [ "$BT" = "debug" ]; then TASK="assembleDebug"; else TASK="assembleRelease"; fi
 
           if [ -f gradlew ]; then
